@@ -1,0 +1,7 @@
+---
+- name: Install and start Nginx
+  hosts: scyllaf1
+  become: yes
+
+  roles:
+    - nginx
