@@ -1,0 +1,87 @@
+---
+- name: Monitor Windows Services
+  hosts: windows_servers
+  gather_facts: yes
+  
+  vars:
+    critical_services:
+      - W32Time          # Windows Time
+      - Dnscache         # DNS Client
+      - Dhcp             # DHCP Client
+      - EventLog         # Windows Event Log
+      - WinRM            # Windows Remote Management
+      - LanmanServer     # Server (File Sharing)
+      - LanmanWorkstation # Workstation
+    
+  tasks:
+    - name: Check critical services status
+      win_service:
+        name: "{{ item }}"
+      register: service_status
+      loop: "{{ critical_services }}"
+      ignore_errors: yes
+      
+    - name: Display service status
+      debug:
+        msg: "Service {{ item.item }} - State: {{ item.state }} - Start Mode: {{ item.start_mode }}"
+      loop: "{{ service_status.results }}"
+      when: item.exists
+      
+    - name: Alert on stopped critical services
+      debug:
+        msg: "CRITICAL: Service {{ item.item }} is NOT running on {{ inventory_hostname }}"
+      loop: "{{ service_status.results }}"
+      when: 
+        - item.exists
+        - item.state != "running"
+        - item.start_mode == "auto"
+        
+    - name: Get all stopped automatic services
+      win_shell: |
+        Get-Service | Where-Object {$_.StartType -eq 'Automatic' -and $_.Status -ne 'Running'} | 
+        Select-Object Name, DisplayName, Status | Format-Table -AutoSize
+      register: stopped_auto_services
+      
+    - name: Display stopped automatic services
+      debug:
+        msg: "{{ stopped_auto_services.stdout_lines }}"
+      when: stopped_auto_services.stdout_lines | length > 2
+      
+    - name: Check Windows Event Log for errors (last 24 hours)
+      win_shell: |
+        Get-EventLog -LogName System -EntryType Error -After (Get-Date).AddHours(-24) |
+        Select-Object -First 10 TimeGenerated, Source, Message |
+        Format-List
+      register: system_errors
+      ignore_errors: yes
+      
+    - name: Display recent system errors
+      debug:
+        msg: "{{ system_errors.stdout_lines }}"
+      when: system_errors.stdout_lines | length > 0
+      
+    - name: Check Application Event Log errors
+      win_shell: |
+        Get-EventLog -LogName Application -EntryType Error -After (Get-Date).AddHours(-24) |
+        Select-Object -First 10 TimeGenerated, Source, Message |
+        Format-List
+      register: app_errors
+      ignore_errors: yes
+      
+    - name: Display recent application errors
+      debug:
+        msg: "{{ app_errors.stdout_lines }}"
+      when: app_errors.stdout_lines | length > 0
+      
+    - name: Check for Windows Updates pending reboot
+      win_shell: |
+        $reboot = $false
+        if (Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -EA Ignore) { $reboot = $true }
+        if (Get-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -EA Ignore) { $reboot = $true }
+        $reboot
+      register: reboot_pending
+      
+    - name: Alert if reboot is pending
+      debug:
+        msg: "WARNING: {{ inventory_hostname }} requires a reboot"
+      when: reboot_pending.stdout | trim == 'True'

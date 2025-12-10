@@ -1,0 +1,90 @@
+---
+- name: Collect System Metrics
+  hosts: all
+  gather_facts: yes
+  become: yes
+  
+  tasks:
+    - name: Create metrics directory
+      file:
+        path: /var/log/ansible_metrics
+        state: directory
+        mode: '0755'
+        
+    - name: Collect CPU info
+      shell: |
+        echo "=== CPU Information ===" > /var/log/ansible_metrics/cpu.txt
+        lscpu >> /var/log/ansible_metrics/cpu.txt
+        echo "" >> /var/log/ansible_metrics/cpu.txt
+        echo "=== CPU Usage ===" >> /var/log/ansible_metrics/cpu.txt
+        top -bn1 | head -20 >> /var/log/ansible_metrics/cpu.txt
+      changed_when: false
+      
+    - name: Collect memory info
+      shell: |
+        echo "=== Memory Information ===" > /var/log/ansible_metrics/memory.txt
+        free -h >> /var/log/ansible_metrics/memory.txt
+        echo "" >> /var/log/ansible_metrics/memory.txt
+        echo "=== Top Memory Consumers ===" >> /var/log/ansible_metrics/memory.txt
+        ps aux --sort=-%mem | head -10 >> /var/log/ansible_metrics/memory.txt
+      changed_when: false
+      
+    - name: Collect disk info
+      shell: |
+        echo "=== Disk Usage ===" > /var/log/ansible_metrics/disk.txt
+        df -h >> /var/log/ansible_metrics/disk.txt
+        echo "" >> /var/log/ansible_metrics/disk.txt
+        echo "=== Inode Usage ===" >> /var/log/ansible_metrics/disk.txt
+        df -i >> /var/log/ansible_metrics/disk.txt
+        echo "" >> /var/log/ansible_metrics/disk.txt
+        echo "=== Largest Directories ===" >> /var/log/ansible_metrics/disk.txt
+        du -h --max-depth=1 / 2>/dev/null | sort -hr | head -20 >> /var/log/ansible_metrics/disk.txt
+      changed_when: false
+      
+    - name: Collect network info
+      shell: |
+        echo "=== Network Interfaces ===" > /var/log/ansible_metrics/network.txt
+        ip addr >> /var/log/ansible_metrics/network.txt
+        echo "" >> /var/log/ansible_metrics/network.txt
+        echo "=== Network Statistics ===" >> /var/log/ansible_metrics/network.txt
+        ss -s >> /var/log/ansible_metrics/network.txt
+        echo "" >> /var/log/ansible_metrics/network.txt
+        echo "=== Active Connections ===" >> /var/log/ansible_metrics/network.txt
+        ss -tuln >> /var/log/ansible_metrics/network.txt
+      changed_when: false
+      
+    - name: Collect system load
+      shell: |
+        echo "=== System Load ===" > /var/log/ansible_metrics/load.txt
+        uptime >> /var/log/ansible_metrics/load.txt
+        echo "" >> /var/log/ansible_metrics/load.txt
+        echo "=== Load Average History ===" >> /var/log/ansible_metrics/load.txt
+        sar -q 1 5 >> /var/log/ansible_metrics/load.txt 2>/dev/null || echo "sar not available"
+      changed_when: false
+      
+    - name: Create summary report
+      shell: |
+        echo "=== System Health Summary for {{ inventory_hostname }} ===" > /var/log/ansible_metrics/summary.txt
+        echo "Date: $(date)" >> /var/log/ansible_metrics/summary.txt
+        echo "" >> /var/log/ansible_metrics/summary.txt
+        echo "Hostname: $(hostname)" >> /var/log/ansible_metrics/summary.txt
+        echo "Uptime: $(uptime -p)" >> /var/log/ansible_metrics/summary.txt
+        echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')" >> /var/log/ansible_metrics/summary.txt
+        echo "CPU Usage: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}')" >> /var/log/ansible_metrics/summary.txt
+        echo "Memory Usage: $(free | grep Mem | awk '{printf "%.2f%%", $3/$2 * 100.0}')" >> /var/log/ansible_metrics/summary.txt
+        echo "Disk Usage: $(df -h / | tail -1 | awk '{print $5}')" >> /var/log/ansible_metrics/summary.txt
+        echo "Active Users: $(who | wc -l)" >> /var/log/ansible_metrics/summary.txt
+      changed_when: false
+      
+    - name: Fetch metrics to AWX
+      fetch:
+        src: "/var/log/ansible_metrics/{{ item }}"
+        dest: "/tmp/metrics/{{ inventory_hostname }}_{{ item }}"
+        flat: yes
+      loop:
+        - summary.txt
+        - cpu.txt
+        - memory.txt
+        - disk.txt
+        - network.txt
+      ignore_errors: yes

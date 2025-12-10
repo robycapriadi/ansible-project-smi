@@ -1,0 +1,76 @@
+---
+- name: VM Health Check and Monitoring
+  hosts: all
+  gather_facts: yes
+  become: yes
+  
+  tasks:
+    - name: Check if host is reachable
+      ping:
+      
+    - name: Gather system information
+      setup:
+        gather_subset:
+          - 'all'
+      
+    - name: Check CPU usage
+      shell: top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+      register: cpu_usage
+      changed_when: false
+      
+    - name: Check memory usage
+      shell: free | grep Mem | awk '{printf "%.2f", $3/$2 * 100.0}'
+      register: memory_usage
+      changed_when: false
+      
+    - name: Check disk usage
+      shell: df -h / | tail -1 | awk '{print $5}' | cut -d'%' -f1
+      register: disk_usage
+      changed_when: false
+      
+    - name: Check system uptime
+      shell: uptime -p
+      register: system_uptime
+      changed_when: false
+      
+    - name: Check running processes count
+      shell: ps aux | wc -l
+      register: process_count
+      changed_when: false
+      
+    - name: Check network connectivity
+      shell: ping -c 3 8.8.8.8 | grep "packet loss" | awk '{print $6}'
+      register: network_status
+      changed_when: false
+      ignore_errors: yes
+      
+    - name: Display health status
+      debug:
+        msg:
+          - "========================================="
+          - "Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_default_ipv4.address }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "CPU Usage: {{ cpu_usage.stdout }}%"
+          - "Memory Usage: {{ memory_usage.stdout }}%"
+          - "Disk Usage: {{ disk_usage.stdout }}%"
+          - "Uptime: {{ system_uptime.stdout }}"
+          - "Running Processes: {{ process_count.stdout }}"
+          - "Network Status: {{ network_status.stdout | default('OK') }}"
+          - "========================================="
+          
+    - name: Check for high CPU usage
+      debug:
+        msg: "WARNING: High CPU usage detected on {{ inventory_hostname }}"
+      when: cpu_usage.stdout | float > 80
+      
+    - name: Check for high memory usage
+      debug:
+        msg: "WARNING: High memory usage detected on {{ inventory_hostname }}"
+      when: memory_usage.stdout | float > 80
+      
+    - name: Check for high disk usage
+      debug:
+        msg: "WARNING: High disk usage detected on {{ inventory_hostname }}"
+      when: disk_usage.stdout | int > 80

@@ -1,0 +1,100 @@
+---
+- name: Windows VM Health Check
+  hosts: windows_servers
+  gather_facts: yes
+  
+  tasks:
+    - name: Gather Windows facts
+      setup:
+        
+    - name: Get CPU usage
+      win_shell: |
+        $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | 
+               Select-Object -ExpandProperty CounterSamples | 
+               Select-Object -ExpandProperty CookedValue
+        [Math]::Round($cpu, 2)
+      register: cpu_usage
+      
+    - name: Get memory usage
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        $totalMemory = $os.TotalVisibleMemorySize
+        $freeMemory = $os.FreePhysicalMemory
+        $usedMemory = $totalMemory - $freeMemory
+        $percentUsed = [Math]::Round(($usedMemory / $totalMemory) * 100, 2)
+        $percentUsed
+      register: memory_usage
+      
+    - name: Get disk usage
+      win_shell: |
+        $disk = Get-PSDrive C | Select-Object Used,Free
+        $total = $disk.Used + $disk.Free
+        $percentUsed = [Math]::Round(($disk.Used / $total) * 100, 2)
+        $percentUsed
+      register: disk_usage
+      
+    - name: Get system uptime
+      win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        "{0} days, {1} hours, {2} minutes" -f $uptime.Days, $uptime.Hours, $uptime.Minutes
+      register: system_uptime
+      
+    - name: Get running processes count
+      win_shell: (Get-Process | Measure-Object).Count
+      register: process_count
+      
+    - name: Get running services count
+      win_shell: (Get-Service | Where-Object {$_.Status -eq 'Running'} | Measure-Object).Count
+      register: running_services
+      
+    - name: Get Windows Update status
+      win_shell: |
+        $updates = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
+        "Last Update: {0} - {1}" -f $updates.InstalledOn, $updates.Description
+      register: update_status
+      ignore_errors: yes
+      
+    - name: Check network connectivity
+      win_shell: Test-NetConnection 8.8.8.8 -InformationLevel Quiet
+      register: network_test
+      
+    - name: Display health status
+      debug:
+        msg:
+          - "========================================="
+          - "Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_ip_addresses[0] }}"
+          - "OS: {{ ansible_os_name }}"
+          - "OS Version: {{ ansible_distribution_version }}"
+          - "Computer Name: {{ ansible_hostname }}"
+          - "Domain: {{ ansible_domain | default('WORKGROUP') }}"
+          - "CPU Usage: {{ cpu_usage.stdout | trim }}%"
+          - "Memory Usage: {{ memory_usage.stdout | trim }}%"
+          - "Disk C: Usage: {{ disk_usage.stdout | trim }}%"
+          - "Uptime: {{ system_uptime.stdout | trim }}"
+          - "Running Processes: {{ process_count.stdout | trim }}"
+          - "Running Services: {{ running_services.stdout | trim }}"
+          - "{{ update_status.stdout | trim }}"
+          - "Network Connectivity: {{ 'OK' if network_test.stdout | trim == 'True' else 'FAILED' }}"
+          - "========================================="
+          
+    - name: Check for high CPU usage
+      debug:
+        msg: "WARNING: High CPU usage detected on {{ inventory_hostname }}"
+      when: cpu_usage.stdout | trim | float > 80
+      
+    - name: Check for high memory usage
+      debug:
+        msg: "WARNING: High memory usage detected on {{ inventory_hostname }}"
+      when: memory_usage.stdout | trim | float > 80
+      
+    - name: Check for high disk usage
+      debug:
+        msg: "WARNING: High disk usage detected on {{ inventory_hostname }}"
+      when: disk_usage.stdout | trim | float > 80
+      
+    - name: Check for network issues
+      debug:
+        msg: "CRITICAL: Network connectivity issue on {{ inventory_hostname }}"
+      when: network_test.stdout | trim != 'True'

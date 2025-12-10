@@ -1,0 +1,53 @@
+---
+- name: Monitor Critical Services
+  hosts: all
+  gather_facts: yes
+  become: yes
+  
+  vars:
+    critical_services:
+      - sshd
+      - systemd-resolved
+      - chronyd
+    
+  tasks:
+    - name: Check if critical services are running
+      systemd:
+        name: "{{ item }}"
+      register: service_status
+      loop: "{{ critical_services }}"
+      ignore_errors: yes
+      
+    - name: Display service status
+      debug:
+        msg: "Service {{ item.item }} is {{ item.status.ActiveState }}"
+      loop: "{{ service_status.results }}"
+      when: item.status is defined
+      
+    - name: Alert on stopped services
+      debug:
+        msg: "CRITICAL: Service {{ item.item }} is NOT running on {{ inventory_hostname }}"
+      loop: "{{ service_status.results }}"
+      when: 
+        - item.status is defined
+        - item.status.ActiveState != "active"
+        
+    - name: Check for failed systemd units
+      shell: systemctl --failed --no-pager
+      register: failed_units
+      changed_when: false
+      
+    - name: Display failed units
+      debug:
+        msg: "{{ failed_units.stdout_lines }}"
+      when: failed_units.stdout_lines | length > 1
+      
+    - name: Check last 20 system logs for errors
+      shell: journalctl -p err -n 20 --no-pager
+      register: system_errors
+      changed_when: false
+      
+    - name: Display recent errors
+      debug:
+        msg: "{{ system_errors.stdout_lines }}"
+      when: system_errors.stdout != ""

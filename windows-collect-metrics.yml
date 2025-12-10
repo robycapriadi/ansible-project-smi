@@ -1,0 +1,158 @@
+---
+- name: Collect Windows System Metrics
+  hosts: windows_servers
+  gather_facts: yes
+  
+  tasks:
+    - name: Create metrics directory
+      win_file:
+        path: C:\Temp\ansible_metrics
+        state: directory
+        
+    - name: Collect system information
+      win_shell: |
+        systeminfo > C:\Temp\ansible_metrics\system_info.txt
+      
+    - name: Collect CPU information
+      win_shell: |
+        "=== CPU Information ===" | Out-File -FilePath C:\Temp\ansible_metrics\cpu.txt
+        Get-CimInstance Win32_Processor | 
+        Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed |
+        Format-List | Out-File -Append -FilePath C:\Temp\ansible_metrics\cpu.txt
+        
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\cpu.txt
+        "=== CPU Usage (5 samples) ===" | Out-File -Append -FilePath C:\Temp\ansible_metrics\cpu.txt
+        1..5 | ForEach-Object {
+            $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | 
+                   Select-Object -ExpandProperty CounterSamples | 
+                   Select-Object CookedValue
+            "Sample $_: $($cpu.CookedValue)%" | Out-File -Append -FilePath C:\Temp\ansible_metrics\cpu.txt
+            Start-Sleep -Seconds 1
+        }
+      
+    - name: Collect memory information
+      win_shell: |
+        "=== Memory Information ===" | Out-File -FilePath C:\Temp\ansible_metrics\memory.txt
+        $os = Get-CimInstance Win32_OperatingSystem
+        "Total Physical Memory: {0:N2} GB" -f ($os.TotalVisibleMemorySize/1MB) | 
+        Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+        "Free Physical Memory: {0:N2} GB" -f ($os.FreePhysicalMemory/1MB) |
+        Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+        "Used Physical Memory: {0:N2} GB" -f (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB) |
+        Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+        
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+        "=== Top Memory Consumers ===" | Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+        Get-Process | Sort-Object WorkingSet -Descending | Select-Object -First 10 Name, 
+        @{Name="Memory(MB)";Expression={[Math]::Round($_.WorkingSet/1MB,2)}} |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\memory.txt
+      
+    - name: Collect disk information
+      win_shell: |
+        "=== Disk Information ===" | Out-File -FilePath C:\Temp\ansible_metrics\disk.txt
+        Get-PSDrive -PSProvider FileSystem | 
+        Select-Object Name, 
+        @{Name="Used(GB)";Expression={[Math]::Round($_.Used/1GB,2)}},
+        @{Name="Free(GB)";Expression={[Math]::Round($_.Free/1GB,2)}},
+        @{Name="Total(GB)";Expression={[Math]::Round(($_.Used+$_.Free)/1GB,2)}},
+        @{Name="Used%";Expression={[Math]::Round(($_.Used/($_.Used+$_.Free))*100,2)}} |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\disk.txt
+        
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\disk.txt
+        "=== Largest Folders on C: ===" | Out-File -Append -FilePath C:\Temp\ansible_metrics\disk.txt
+        Get-ChildItem C:\ -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $size = (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | 
+                    Measure-Object -Property Length -Sum).Sum / 1GB
+            [PSCustomObject]@{
+                Folder = $_.Name
+                "Size(GB)" = [Math]::Round($size, 2)
+            }
+        } | Sort-Object "Size(GB)" -Descending | Select-Object -First 10 |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\disk.txt
+      
+    - name: Collect network information
+      win_shell: |
+        "=== Network Adapters ===" | Out-File -FilePath C:\Temp\ansible_metrics\network.txt
+        Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} |
+        Select-Object Name, InterfaceDescription, Status, LinkSpeed |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        "=== IP Configuration ===" | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        Get-NetIPAddress | Where-Object {$_.AddressFamily -eq 'IPv4' -and $_.IPAddress -notlike '127.*'} |
+        Select-Object InterfaceAlias, IPAddress, PrefixLength |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        "=== Active Network Connections ===" | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+        Get-NetTCPConnection | Where-Object {$_.State -eq 'Established'} |
+        Group-Object RemoteAddress | Sort-Object Count -Descending | Select-Object -First 10 Name, Count |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\network.txt
+      
+    - name: Collect performance counters
+      win_shell: |
+        "=== Performance Counters ===" | Out-File -FilePath C:\Temp\ansible_metrics\performance.txt
+        
+        $counters = @(
+            '\Memory\Available MBytes',
+            '\Memory\Pages/sec',
+            '\PhysicalDisk(_Total)\Avg. Disk Queue Length',
+            '\PhysicalDisk(_Total)\% Disk Time',
+            '\Processor(_Total)\% Processor Time',
+            '\System\Processor Queue Length'
+        )
+        
+        Get-Counter -Counter $counters | 
+        Select-Object -ExpandProperty CounterSamples |
+        Select-Object Path, CookedValue |
+        Format-Table -AutoSize | Out-File -Append -FilePath C:\Temp\ansible_metrics\performance.txt
+      
+    - name: Create summary report
+      win_shell: |
+        "=== System Health Summary for $env:COMPUTERNAME ===" | 
+        Out-File -FilePath C:\Temp\ansible_metrics\summary.txt
+        "Date: $(Get-Date)" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        "" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $os = Get-CimInstance Win32_OperatingSystem
+        "Hostname: $env:COMPUTERNAME" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        "OS: $($os.Caption)" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        "OS Version: $($os.Version)" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        "Uptime: {0} days, {1} hours, {2} minutes" -f $uptime.Days, $uptime.Hours, $uptime.Minutes |
+        Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | 
+               Select-Object -ExpandProperty CounterSamples | 
+               Select-Object -ExpandProperty CookedValue
+        "CPU Usage: {0:N2}%" -f $cpu | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $memPercent = (($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100
+        "Memory Usage: {0:N2}%" -f $memPercent | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $disk = Get-PSDrive C
+        $diskPercent = ($disk.Used / ($disk.Used + $disk.Free)) * 100
+        "Disk C: Usage: {0:N2}%" -f $diskPercent | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $services = (Get-Service | Where-Object {$_.Status -eq 'Running'} | Measure-Object).Count
+        "Running Services: $services" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+        
+        $processes = (Get-Process | Measure-Object).Count
+        "Running Processes: $processes" | Out-File -Append -FilePath C:\Temp\ansible_metrics\summary.txt
+      
+    - name: Fetch metrics to AWX
+      win_copy:
+        src: "C:\\Temp\\ansible_metrics\\{{ item }}"
+        dest: "/tmp/metrics/{{ inventory_hostname }}_{{ item }}"
+        remote_src: no
+      loop:
+        - summary.txt
+        - cpu.txt
+        - memory.txt
+        - disk.txt
+        - network.txt
+        - performance.txt
+      delegate_to: localhost
+      ignore_errors: yes
